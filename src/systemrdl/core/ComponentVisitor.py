@@ -37,6 +37,7 @@ class ComponentVisitor(BaseVisitor):
             self.component.parameters = []
         else:
             self.component.parameters = param_defs
+        self.component.default_properties = {}
 
         # Scratchpad of local property assignments encountered in body of component
         # format is:
@@ -44,6 +45,7 @@ class ComponentVisitor(BaseVisitor):
         #       prop_name : (prop_src_ref, prop_rhs)
         #   }
         self.property_dict: Dict[str, Tuple[SourceRefBase, Any]] = OrderedDict()
+        self.default_property_dict: Dict[str, Tuple[SourceRefBase, Any]] = OrderedDict()
 
         # Scratchpad of dynamic property assignments encountered in body of component
         # format is:
@@ -600,7 +602,8 @@ class ComponentVisitor(BaseVisitor):
             raise RuntimeError
 
         if default:
-            self.compiler.namespace.register_default_property(prop_name, rhs, prop_src_ref)
+            self.default_property_dict[prop_name] = (prop_src_ref, rhs)
+#             self.compiler.namespace.register_default_property(prop_name, rhs, prop_src_ref)
         else:
             # Check if multiple assignments in current scope.
             # Exclude "intr" property from this check since interrupt prop mod assignments
@@ -787,9 +790,19 @@ class ComponentVisitor(BaseVisitor):
 
             # Apply property
             rule.assign_value(self.component, prop_rhs, prop_src_ref)
-
         # Clear out pending assignments now that they have been resolved
         self.property_dict = {}
+        
+        
+        for prop_name, (prop_src_ref, prop_rhs) in self.default_property_dict.items():
+            rule = self.compiler.env.property_rules.lookup_property(prop_name)
+            if rule is None:
+                self.msg.fatal("Unrecognized property '%s'" % prop_name, prop_src_ref)
+            
+            # Apply property
+            rule.assign_value(self.component, prop_rhs, prop_src_ref, True)
+        # Clear out pending assignments now that they have been resolved
+        self.default_property_dict = {}
 
     def apply_dynamic_properties(self) -> None:
 

@@ -44,7 +44,7 @@ class PropertyRule:
         return self.get_name_cls()
 
 
-    def assign_value(self, comp_def: 'comp.Component', value: Any, src_ref: 'SourceRefBase') -> None:
+    def assign_value(self, comp_def: 'comp.Component', value: Any, src_ref: 'SourceRefBase', default: bool = False) -> None:
         """
         Used by the compiler for either local or dynamic prop assignments
         This does the following:
@@ -55,7 +55,7 @@ class PropertyRule:
         """
 
         # Check if property is allowed in this component
-        if type(comp_def) not in self.bindable_to:
+        if type(comp_def) not in self.bindable_to and not default:
             self.env.msg.fatal(
                 "The property '%s' is not valid for '%s' components"
                 % (self.get_name(), type(comp_def).__name__.lower()),
@@ -101,18 +101,21 @@ class PropertyRule:
                     src_ref
                 )
 
-        # If the property belongs to a mutex group, wipe out any of its
-        # counterpart properties
-        if self.mutex_group is not None:
-            for prop_name in _get_mutex_properties(self.mutex_group):
-                if prop_name in comp_def.properties:
-                    del comp_def.properties[prop_name]
+        if default:
+            comp_def.default_properties[self.get_name()] = value
+        else:
+            # If the property belongs to a mutex group, wipe out any of its
+            # counterpart properties
+            if self.mutex_group is not None:
+                for prop_name in _get_mutex_properties(self.mutex_group):
+                    if prop_name in comp_def.properties:
+                        del comp_def.properties[prop_name]
 
-        # Store the property
-        comp_def.properties[self.get_name()] = value
+            # Store the property
+            comp_def.properties[self.get_name()] = value
 
-        if src_ref is not None:
-            comp_def.property_src_ref[self.get_name()] = src_ref
+            if src_ref is not None:
+                comp_def.property_src_ref[self.get_name()] = src_ref
 
 
     def get_default(self, node: m_node.Node) -> Any:
