@@ -1,6 +1,10 @@
-
+from parameterized import parameterized_class
 from unittest_utils import RDLSourceTestCase
 
+@parameterized_class([
+   {"single_elaborate_optimization": True},
+   {"single_elaborate_optimization": False},
+])
 class TestReferences(RDLSourceTestCase):
 
     def test_bad_traversal(self):
@@ -70,7 +74,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertEqual(top.get_property('name', default="NA"), "NA")
 
         with self.subTest("glbl_sig"):
-            self.assertIs(glbl_sig.get_property('ref_prop'), None)
+            self.assertIsNone(glbl_sig.get_property('ref_prop'))
 
         with self.subTest("top"):
             self.assertEqual(top.get_property('ref_prop'), top_reg21_x)
@@ -82,7 +86,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertIs(top_reg1.get_property('ref_prop').inst, top_reg1_x.inst)
 
         with self.subTest("top.reg1.sig"):
-            self.assertIs(top_reg1_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg1_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg1.x"):
             self.assertEqual(top_reg1_x.get_property('resetsignal'), glbl_sig)
@@ -97,7 +101,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertIs(top_reg20.get_property('ref_prop').inst, top_reg20_x.inst)
 
         with self.subTest("top.reg2[0].sig"):
-            self.assertIs(top_reg20_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg20_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg2[0].x"):
             self.assertEqual(top_reg20_x.get_property('resetsignal'), glbl_sig)
@@ -113,7 +117,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertIs(top_reg21.get_property('ref_prop').inst, top_reg21_x.inst)
 
         with self.subTest("top.reg2[1].sig"):
-            self.assertIs(top_reg21_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg21_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg2[1].x"):
             self.assertEqual(top_reg21_x.get_property('resetsignal'), glbl_sig)
@@ -131,6 +135,7 @@ class TestReferences(RDLSourceTestCase):
         )
 
         glbl_sig      = root.find_by_path("glbl_sig")
+        glbl_sig2     = root.find_by_path("glbl_sig2")
         top           = root.find_by_path("top")
         top_reg1      = root.find_by_path("top.reg1")
         top_reg1_sig  = root.find_by_path("top.reg1.sig")
@@ -146,10 +151,14 @@ class TestReferences(RDLSourceTestCase):
         top_reg21_y   = root.find_by_path("top.reg2[1].y")
 
         with self.subTest("glbl_sig"):
-            self.assertIs(glbl_sig.get_property('ref_prop'), None)
+            self.assertIsNone(glbl_sig.get_property('ref_prop'))
+            self.assertEqual(glbl_sig.get_property('desc'), "root dpa")
+
+        with self.subTest("glbl_sig2"):
+            self.assertEqual(glbl_sig2.get_property('ref_prop'), glbl_sig)
 
         with self.subTest("top"):
-            self.assertIs(top.get_property('ref_prop'), None)
+            self.assertIsNone(top.get_property('ref_prop'))
 
 
         with self.subTest("top.reg1"):
@@ -157,7 +166,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertIs(top_reg1.get_property('ref_prop').inst, top_reg20.inst)
 
         with self.subTest("top.reg1.sig"):
-            self.assertIs(top_reg1_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg1_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg1.x"):
             self.assertEqual(top_reg1_x.get_property('ref_prop'), top_reg1_y)
@@ -181,7 +190,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertIs(top_reg20.get_property('ref_prop').inst, top_reg21_x.inst)
 
         with self.subTest("top.reg2[0].sig"):
-            self.assertIs(top_reg20_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg20_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg2[0].x"):
             self.assertEqual(top_reg20_x.get_property('ref_prop'), top_reg1)
@@ -203,7 +212,7 @@ class TestReferences(RDLSourceTestCase):
             self.assertIs(top_reg21.get_property('ref_prop').inst, top_reg21_x.inst)
 
         with self.subTest("top.reg2[1].sig"):
-            self.assertIs(top_reg21_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg21_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg2[1].x"):
             self.assertEqual(top_reg21_x.get_property('ref_prop'), top_reg1)
@@ -244,20 +253,20 @@ class TestReferences(RDLSourceTestCase):
         top_reg3_z    = root.find_by_path("top.reg3.z")
 
         with self.subTest("glbl_sig"):
-            self.assertIs(glbl_sig.get_property('ref_prop'), None)
+            self.assertIsNone(glbl_sig.get_property('ref_prop'))
 
         with self.subTest("top"):
-            self.assertIs(top.get_property('ref_prop'), None)
+            self.assertIsNone(top.get_property('ref_prop'))
 
 
         with self.subTest("top.reg1"):
-            self.assertIs(top_reg1.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg1.get_property('ref_prop'))
 
         with self.subTest("top.reg1.sig"):
-            self.assertIs(top_reg1_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg1_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg1.x"):
-            self.assertIs(top_reg1_x.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg1_x.get_property('ref_prop'))
             self.assertEqual(top_reg1_x.get_property('resetsignal'), glbl_sig)
             self.assertIs(top_reg1_x.get_property('resetsignal').inst, glbl_sig.inst)
 
@@ -271,13 +280,13 @@ class TestReferences(RDLSourceTestCase):
 
 
         with self.subTest("top.reg2[0]"):
-            self.assertIs(top_reg20.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg20.get_property('ref_prop'))
 
         with self.subTest("top.reg2[0].sig"):
-            self.assertIs(top_reg20_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg20_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg2[0].x"):
-            self.assertIs(top_reg20_x.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg20_x.get_property('ref_prop'))
             self.assertEqual(top_reg20_x.get_property('resetsignal'), glbl_sig)
             self.assertIs(top_reg20_x.get_property('resetsignal').inst, glbl_sig.inst)
 
@@ -291,13 +300,13 @@ class TestReferences(RDLSourceTestCase):
 
 
         with self.subTest("top.reg2[1]"):
-            self.assertIs(top_reg21.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg21.get_property('ref_prop'))
 
         with self.subTest("top.reg2[1].sig"):
-            self.assertIs(top_reg21_sig.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg21_sig.get_property('ref_prop'))
 
         with self.subTest("top.reg2[1].x"):
-            self.assertIs(top_reg21_x.get_property('ref_prop'), None)
+            self.assertIsNone(top_reg21_x.get_property('ref_prop'))
             self.assertEqual(top_reg21_x.get_property('resetsignal'), glbl_sig)
             self.assertIs(top_reg21_x.get_property('resetsignal').inst, glbl_sig.inst)
 

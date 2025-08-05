@@ -1,8 +1,12 @@
-
+from parameterized import parameterized_class
 from unittest_utils import RDLSourceTestCase
 import systemrdl.rdltypes as rdlt
 from systemrdl import RDLCompiler
 
+@parameterized_class([
+   {"single_elaborate_optimization": True},
+   {"single_elaborate_optimization": False},
+])
 class TestParameters(RDLSourceTestCase):
 
     def test_spec_examples(self):
@@ -70,21 +74,21 @@ class TestParameters(RDLSourceTestCase):
         reg3 = root.find_by_path("amap2.reg3")
 
         with self.subTest("reg1"):
-            self.assertEqual(reg1.inst.type_name, "param_reg")
+            self.assertEqual(reg1.type_name, "param_reg")
             self.assertEqual(reg1.get_property('name'), "myname")
             self.assertEqual(reg1.get_property('shared'), False)
             data = reg1.get_child_by_name("data")
             self.assertEqual(data.get_property('hdl_path_slice'), ["dat"])
 
         with self.subTest("reg2"):
-            self.assertEqual(reg2.inst.type_name, "param_reg")
+            self.assertEqual(reg2.type_name, "param_reg")
             self.assertEqual(reg2.get_property('name'), "myname")
             self.assertEqual(reg2.get_property('shared'), False)
             data = reg2.get_child_by_name("data")
             self.assertEqual(data.get_property('hdl_path_slice'), ["dat"])
 
         with self.subTest("reg3"):
-            self.assertEqual(reg3.inst.type_name, "param_reg_NAME_a36638b4_SHARED_t_FIELD_SLICES_184d423e")
+            self.assertEqual(reg3.type_name, "param_reg_NAME_a36638b4_SHARED_t_FIELD_SLICES_184d423e")
             self.assertEqual(reg3.get_property('name'), "othername")
             self.assertEqual(reg3.get_property('shared'), True)
             data = reg3.get_child_by_name("data")
@@ -190,6 +194,33 @@ class TestParameters(RDLSourceTestCase):
         self.assertEqual(ffX.width, 2)
         self.assertEqual(ffY.width, 3)
         self.assertEqual(ffZ.width, 1)
+
+    def test_param_dpa_scopes(self):
+        root = self.compile(
+            ["rdl_src/parameters.rdl"],
+            "param_dpa_scopes"
+        )
+        top = root.top
+        d = top.find_by_path("reg_default")
+        df = top.find_by_path("reg_default.f")
+        o1 = top.find_by_path("reg_override1")
+        o1f = top.find_by_path("reg_override1.f")
+        o2 = top.find_by_path("reg_override2")
+        o2f = top.find_by_path("reg_override2.f")
+
+        self.assertEqual(d.get_property("desc"), "reg default")
+        self.assertEqual(df.get_property("desc"), "reg default")
+        self.assertEqual(o1.get_property("desc"), "top default")
+        self.assertEqual(o1f.get_property("desc"), "top default")
+        self.assertEqual(o2.get_property("desc"), "from inst")
+        self.assertEqual(o2f.get_property("desc"), "from inst")
+
+        self.assertEqual(d.get_property("name"), "dpa1")
+        self.assertEqual(df.get_property("name"), "dpa2")
+        self.assertEqual(o1.get_property("name"), "top default")
+        self.assertEqual(o1f.get_property("name"), "top default")
+        self.assertEqual(o2.get_property("name"), "top default")
+        self.assertEqual(o2f.get_property("name"), "top default")
 
     def test_err_ref_in_parameter(self):
         self.assertRDLCompileError(

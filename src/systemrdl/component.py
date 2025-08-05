@@ -1,8 +1,8 @@
 import operator
 import functools
-from copy import deepcopy
+from copy import deepcopy, copy
 from collections import OrderedDict
-from typing import Optional, List, Dict, TYPE_CHECKING, Any, Union
+from typing import Optional, List, Dict, TYPE_CHECKING, Any, Union, Set
 
 if TYPE_CHECKING:
     from typing import TypeVar
@@ -68,17 +68,17 @@ class Component:
         self.children: List[Component] = []
 
         # Parameters of this component definition.
-        # These are listed in the order that they were defined
-        self.parameters: List[Parameter] = []
+        # These are stored in the order that they were defined
+        self.parameters_dict: 'OrderedDict[str, Parameter]' = OrderedDict()
 
         # Properties applied to this component
         self.properties: Dict[str, Any] = {}
 
         #: :ref:`api_src_ref` for each explicit property assignment (if available)
-        self.property_src_ref: Dict[str, SourceRefBase] = {}
+        self.property_src_ref: Dict[str, 'SourceRefBase'] = {}
 
         #: :ref:`api_src_ref` for the component definition
-        self.def_src_ref: Optional[SourceRefBase] = None
+        self.def_src_ref: Optional['SourceRefBase'] = None
 
         #------------------------------
         # Component instantiation
@@ -99,16 +99,21 @@ class Component:
         self.external: Optional[bool] = None
 
         #: :ref:`api_src_ref` for the component instantiation.
-        self.inst_src_ref: Optional[SourceRefBase] = None
+        self.inst_src_ref: Optional['SourceRefBase'] = None
 
         #------------------------------
         # List of property names that were assigned via a dynamic property
         # assignment.
-        self._dyn_assigned_props: List[str] = []
+        self._dyn_assigned_props: Set[str] = set()
 
         # List of child instances that were assigned "through" this component,
         # from outside this component's scope.
-        self._dyn_assigned_children: List[str] = []
+        self._dyn_assigned_children: Set[str] = set()
+
+    @property
+    def parameters(self) -> List['Parameter']:
+        # TODO: Add deprecation warning?
+        return list(self.parameters_dict.values())
 
 
     def _copy_for_inst(self: 'ComponentClass', memo: Dict[int, Any]) -> 'ComponentClass':
@@ -123,15 +128,32 @@ class Component:
         result = cls.__new__(cls)
         memo[id(self)] = result
 
-        # First, explicitly copy all parameter objects
-        result.parameters = [param._copy_for_inst(memo) for param in self.parameters]
+        # Copy all parameter objects so that they can accept value overrides
+        result.parameters_dict = OrderedDict()
+        for name, param in self.parameters_dict.items():
+            result.parameters_dict[name] = copy(param)
 
-        # Ensure child components get copied first
+        # Shallow-copy the properties dict so that values can get overridden by DPAs
+        result.properties = self.properties.copy()
+
+        # Shallow copy property_src_ref since otherwise is unnecessary
+        result.property_src_ref = self.property_src_ref.copy()
+
+        # Recurse this special copy method for children
         result.children = [child._copy_for_inst(memo) for child in self.children]
 
-        # Finally, continue deepcopying everything else
-        copy_by_ref = {"original_def", "parent_scope", "comp_defs"}
-        skip = {"parameters", "children"}
+        # Finally, deepcopy everything else
+        copy_by_ref = {
+            "original_def", "parent_scope", "comp_defs",
+            "def_src_ref", "inst_src_ref",
+
+            # Hack: these exist in sub-classes, but easier to just list them here
+            # rather than extending this function
+            "width", "msb", "lsb", "high", "low",
+            "addr_offset", "addr_align",
+            "array_dimensions", "array_stride",
+        }
+        skip = {"parameters_dict", "properties", "children", "property_src_ref"}
         for k, v in self.__dict__.items():
             if k in skip:
                 continue
@@ -139,10 +161,9 @@ class Component:
                 setattr(result, k, v)
             else:
                 setattr(result, k, deepcopy(v, memo))
+
         return result
 
-    def __deepcopy__(self: 'ComponentClass', memo: Dict[int, Any]) -> 'ComponentClass':
-        return self._copy_for_inst(memo)
 
     def __repr__(self) -> str:
         if self.is_instance:

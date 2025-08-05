@@ -1,6 +1,11 @@
+from parameterized import parameterized_class
 
 from unittest_utils import RDLSourceTestCase
 
+@parameterized_class([
+   {"single_elaborate_optimization": True},
+   {"single_elaborate_optimization": False},
+])
 class TestExternal(RDLSourceTestCase):
 
     def test_basic(self):
@@ -62,7 +67,7 @@ class TestExternal(RDLSourceTestCase):
         for name, external in extern_map.items():
             with self.subTest(name):
                 reg = root.find_by_path("extern_test.%s" % name)
-                self.assertIs(reg.inst.external, external)
+                self.assertIs(reg.external, external)
 
     def test_nested_regfile(self):
         root = self.compile(
@@ -88,12 +93,12 @@ class TestExternal(RDLSourceTestCase):
         for name, external in rf1_extern_map.items():
             with self.subTest("rf2a.%s" % name):
                 reg = root.find_by_path("extern_test.rf2a.%s" % name)
-                self.assertIs(reg.inst.external, True)
+                self.assertIs(reg.external, True)
 
             with self.subTest("rf2b.%s" % name):
                 reg = root.find_by_path("extern_test.rf2b.%s" % name)
-                self.assertIs(reg.inst.external, False)
+                self.assertIs(reg.external, False)
 
             with self.subTest("rf2c.%s" % name):
                 reg = root.find_by_path("extern_test.rf2c.%s" % name)
-                self.assertIs(reg.inst.external, external)
+                self.assertIs(reg.external, external)
