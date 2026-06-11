@@ -2,7 +2,7 @@ import operator
 import functools
 from copy import deepcopy, copy
 from collections import OrderedDict
-from typing import Optional, List, Dict, TYPE_CHECKING, Any, Union, Set
+from typing import Optional, List, Dict, TYPE_CHECKING, Any, Union, Set, Tuple
 
 if TYPE_CHECKING:
     from typing import TypeVar
@@ -272,12 +272,30 @@ class AddressableComponent(Component):
         #: If left as None, compiler will resolve with inferred value.
         self.array_stride: Optional[int] = None
 
+        #: Component overrides for array elements that were targeted by an
+        #: indexed dynamic property assignment, making the array heterogeneous.
+        #: Keys are array index tuples. Values are component trees that
+        #: diverge from this array's component tree.
+        #:
+        #: Elements that do not have an entry in this dict are represented by
+        #: this component, as usual.
+        #:
+        #: Remains ``None`` if all array elements are homogeneous.
+        self.array_element_overrides: Optional[Dict[Tuple[int, ...], 'AddressableComponent']] = None
+
     def _copy_for_inst(self: 'AddressableComponentClass', memo: Dict[int, Any], recursive: bool = False) -> 'AddressableComponentClass':
         result = super()._copy_for_inst(memo, recursive)
         result.addr_offset = self.addr_offset
         result.addr_align = self.addr_align
         result.array_dimensions = copy(self.array_dimensions)
         result.array_stride = self.array_stride
+        if self.array_element_overrides is not None:
+            result.array_element_overrides = {
+                idxs: elem._copy_for_inst(memo, recursive)
+                for idxs, elem in self.array_element_overrides.items()
+            }
+        else:
+            result.array_element_overrides = None
         return result
 
 

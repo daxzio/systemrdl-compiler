@@ -3,7 +3,7 @@ import itertools
 from copy import deepcopy, copy
 from collections import deque, OrderedDict
 from typing import TYPE_CHECKING, Optional, Iterator, Any, List, Tuple, Dict
-from typing import Sequence, Union, overload, TypeVar, Type
+from typing import Sequence, Union, overload, TypeVar, Type, cast
 
 from typing_extensions import Literal
 
@@ -124,6 +124,14 @@ class Node:
         else:
             raise RuntimeError
 
+    @staticmethod
+    def _inst_for_array_element(inst: comp.AddressableComponent, idxs: Tuple[int, ...]) -> comp.Component:
+        if inst.array_element_overrides is not None:
+            override = inst.array_element_overrides.get(idxs)
+            if override is not None:
+                return override
+        return inst
+
 
     def unrolled(self) -> Iterator['Node']:
         """
@@ -142,8 +150,11 @@ class Node:
             # Is an array. Yield a Node object for each instance
             range_list = [range(n) for n in self.array_dimensions] # pylint: disable=no-member
             for idxs in itertools.product(*range_list):
-                N = cls(self.inst, self.env, self.parent)
+                inst = Node._inst_for_array_element(self.inst, tuple(idxs))
+                N = cls(cast(comp.AddressableComponent, inst), self.env, self.parent)
                 N.current_idx = list(idxs)
+                if inst is not self.inst:
+                    N._array_inst = self.inst
                 yield N
         else:
             cls2 = type(self)
@@ -184,8 +195,12 @@ class Node:
                 # Unroll the array
                 range_list = [range(n) for n in child_inst.array_dimensions]
                 for idxs in itertools.product(*range_list):
-                    N = Node._factory(child_inst, self.env, self)
-                    N.current_idx = list(idxs) # pylint: disable=attribute-defined-outside-init
+                    inst = Node._inst_for_array_element(child_inst, tuple(idxs))
+                    N = Node._factory(inst, self.env, self)
+                    if isinstance(N, AddressableNode):
+                        N.current_idx = list(idxs) # pylint: disable=attribute-defined-outside-init
+                        if inst is not child_inst:
+                            N._array_inst = child_inst
                     children.append(N)
             else:
                 children.append(Node._factory(child_inst, self.env, self))
@@ -388,6 +403,14 @@ class Node:
                         if idx >= current_node.inst.array_dimensions[i]:
                             raise IndexError("Array index out of range")
                         current_node.current_idx.append(idx)
+
+                    override_inst = Node._inst_for_array_element(current_node.inst, tuple(idx_list))
+                    if override_inst is not current_node.inst:
+                        array_inst = current_node.inst
+                        current_node = Node._factory(override_inst, current_node.env, current_node.parent)
+                        if isinstance(current_node, AddressableNode):
+                            current_node.current_idx = idx_list # pylint: disable=attribute-defined-outside-init
+                            current_node._array_inst = array_inst
                 else:
                     raise IndexError("Index attempted on non-array component")
 
@@ -969,6 +992,10 @@ class AddressableNode(Node):
         #: If None, then the current index is unknown
         self.current_idx: Optional[List[int]] = None
 
+        #: When this node represents a heterogeneous array element override,
+        #: this references the parent array instance for addressing purposes.
+        self._array_inst: Optional[comp.AddressableComponent] = None
+
 
     def get_path_segment(self, array_suffix: str="[{index:d}]", empty_array_suffix: str="[]") -> str:
         # Extends get_path_segment() in order to append any array suffixes
@@ -985,6 +1012,11 @@ class AddressableNode(Node):
                 for idx, dim in zip(self.current_idx, self.array_dimensions):
                     path_segment += array_suffix.format(index=idx, dim=dim)
                 return path_segment
+        elif self.current_idx is not None:
+            # Heterogeneous array element override (scalar inst, known index)
+            for idx in self.current_idx:
+                path_segment += array_suffix.format(index=idx, dim=0)
+            return path_segment
         else:
             return path_segment
 
@@ -1027,8 +1059,27 @@ class AddressableNode(Node):
         :attr:`address_offset`
 
         """
-        assert self.inst.addr_offset is not None
-        return self.inst.addr_offset
+        if self.inst.addr_offset is not None:
+            return self.inst.addr_offset
+
+        if self._array_inst is not None and self._array_inst.addr_offset is not None:
+            return self._array_inst.addr_offset
+
+        raise ValueError("Address offset of this node is unknown")
+
+
+    def _array_element_offset(self, array_dimensions: List[int], array_stride: int, base_offset: int) -> int:
+        if self.current_idx is None:
+            raise ValueError("Index of array element must be known to derive address")
+
+        idx = 0
+        for i, current_idx in enumerate(self.current_idx):
+            sz = 1
+            for j in range(i + 1, len(array_dimensions)):
+                sz *= array_dimensions[j]
+            idx += sz * current_idx
+
+        return base_offset + idx * array_stride
 
 
     @property
@@ -1046,29 +1097,19 @@ class AddressableNode(Node):
         """
         if self.array_dimensions:
             assert self.array_stride is not None
-            if self.current_idx is None:
-                raise ValueError("Index of array element must be known to derive address")
+            return self._array_element_offset(self.array_dimensions, self.array_stride, self.raw_address_offset)
 
-            # Calculate the "flattened" index of a general multidimensional array
-            # For example, a component array declared as:
-            #   foo[S0][S1][S2]
-            # and referenced as:
-            #   foo[I0][I1][I2]
-            # Is flattened like this:
-            #   idx = I0*S1*S2 + I1*S2 + I2
-            idx = 0
-            for i, current_idx in enumerate(self.current_idx):
-                sz = 1
-                for j in range(i + 1, len(self.array_dimensions)):
-                    sz *= self.array_dimensions[j]
-                idx += sz * current_idx
+        if self._array_inst is not None and self.current_idx is not None:
+            assert self._array_inst.array_dimensions is not None
+            assert self._array_inst.array_stride is not None
+            assert self._array_inst.addr_offset is not None
+            return self._array_element_offset(
+                self._array_inst.array_dimensions,
+                self._array_inst.array_stride,
+                self._array_inst.addr_offset,
+            )
 
-            offset = self.raw_address_offset + idx * self.array_stride
-
-        else:
-            offset = self.raw_address_offset
-
-        return offset
+        return self.raw_address_offset
 
 
     @property

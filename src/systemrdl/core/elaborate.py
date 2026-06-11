@@ -44,6 +44,22 @@ class ElabExpressionsListener(walker.RDLListener):
                     v = dedent_text(v)
                 node.inst.properties[prop_name] = v
 
+    def _eval_inst_property_exprs(self, inst: comp.Component, assignee_node: Node) -> None:
+        """
+        Evaluate property assignment expressions for a component subtree.
+        Used for heterogeneous array element overrides that are not visited
+        directly by the walker.
+        """
+        for prop_name, prop_value in list(inst.properties.items()):
+            if isinstance(prop_value, ASTNode):
+                v = prop_value.get_value(assignee_node=assignee_node)
+                if prop_name == "desc" and assignee_node.env.dedent_desc:
+                    v = dedent_text(v)
+                inst.properties[prop_name] = v
+
+        for child in inst.children:
+            self._eval_inst_property_exprs(child, assignee_node)
+
 
     def enter_AddressableComponent(self, node: AddressableNode) -> None:
         # Cast to pre-elaborated variant to satisfy type hinting
@@ -78,6 +94,10 @@ class ElabExpressionsListener(walker.RDLListener):
                     "Array stride allocator '+=' must be greater than zero",
                     node.inst.inst_src_ref
                 )
+
+        if node.inst.array_element_overrides:
+            for elem_inst in node.inst.array_element_overrides.values():
+                self._eval_inst_property_exprs(elem_inst, node)
 
 
     def enter_VectorComponent(self, node: VectorNode) -> None:
@@ -421,6 +441,7 @@ class StructuralPlacementListener(walker.RDLListener):
 
     def exit_Regfile(self, node: RegfileNode) -> None:
         self.resolve_addresses(node)
+        self.sync_array_element_overrides(node)
 
         self.alignment_stack.pop()
 
@@ -428,6 +449,7 @@ class StructuralPlacementListener(walker.RDLListener):
     def exit_Addrmap(self, node: AddrmapNode) -> None:
         is_bridge = node.get_property('bridge')
         self.resolve_addresses(node, is_bridge)
+        self.sync_array_element_overrides(node)
 
         self.msb0_mode_stack.pop()
         self.addressing_mode_stack.pop()
@@ -536,6 +558,27 @@ class StructuralPlacementListener(walker.RDLListener):
                 assert inst.addr_offset is not None
                 return inst.addr_offset
         node.inst.children.sort(key=get_child_sort_key)
+
+    def sync_array_element_overrides(self, node: AddressableNode) -> None:
+        if not node.inst.array_element_overrides:
+            return
+
+        for elem_inst in node.inst.array_element_overrides.values():
+            self._sync_inst_addresses(node.inst, elem_inst)
+
+    def _sync_inst_addresses(self, template: comp.Component, override: comp.Component) -> None:
+        if isinstance(template, comp.Field):
+            assert isinstance(override, comp.Field)
+            override.width = template.width
+            override.msb = template.msb
+            override.lsb = template.lsb
+        elif isinstance(template, comp.AddressableComponent):
+            assert isinstance(override, comp.AddressableComponent)
+            override.addr_offset = template.addr_offset
+            override.array_stride = template.array_stride
+
+        for t_child, o_child in zip(template.children, override.children):
+            self._sync_inst_addresses(t_child, o_child)
 
 #-------------------------------------------------------------------------------
 class LateElabListener(walker.RDLListener):

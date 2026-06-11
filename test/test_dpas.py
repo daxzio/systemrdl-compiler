@@ -1,4 +1,4 @@
-from systemrdl.node import RegNode, FieldNode
+from systemrdl.node import RegNode, FieldNode, RegfileNode
 from unittest_utils import RDLSourceTestCase
 
 class TestDPAs(RDLSourceTestCase):
@@ -256,3 +256,46 @@ class TestDPAs(RDLSourceTestCase):
             with self.subTest(path):
                 if not isinstance(node, FieldNode):
                     self.assertEqual(node.type_name, expected_type_name[path])
+
+    def test_indexed_dpa_reset(self):
+        top = self.compile(
+            ["rdl_src/dpa_array_reset.rdl"],
+            "top"
+        )
+
+        resets = {}
+        gpio_addrs = {}
+        for node in top.descendants(unroll=True):
+            if isinstance(node, RegfileNode) and node.inst_name == "GPIO":
+                gpio_addrs[node.get_path()] = node.address_offset
+            if isinstance(node, FieldNode) and node.inst_name == "CFG":
+                resets[node.get_path()] = node.get_property("reset")
+
+        self.assertEqual(resets["top.GPIO[0].CFG.CFG"], 11)
+        self.assertEqual(resets["top.GPIO[1].CFG.CFG"], 0)
+        self.assertEqual(resets["top.GPIO[2].CFG.CFG"], 0)
+        self.assertEqual(resets["top.GPIO[3].CFG.CFG"], 10)
+
+        gpio_size = top.find_by_path("top.GPIO[0]").size
+        self.assertEqual(gpio_addrs["top.GPIO[0]"], 0)
+        self.assertEqual(gpio_addrs["top.GPIO[1]"], gpio_addrs["top.GPIO[0]"] + gpio_size)
+        self.assertEqual(gpio_addrs["top.GPIO[3]"], gpio_addrs["top.GPIO[0]"] + 3 * gpio_size)
+
+        self.assertEqual(
+            top.find_by_path("top.GPIO[0].CFG.CFG").get_property("reset"),
+            11
+        )
+
+    def test_indexed_dpa_reset_rejects_non_reset(self):
+        self.assertRDLCompileError(
+            ["rdl_err_src/dpa_array_non_reset.rdl"],
+            "top",
+            "Use of array suffixes in dynamic property assignments is only supported for the 'reset' property"
+        )
+
+    def test_indexed_dpa_reset_rejects_oob_index(self):
+        self.assertRDLCompileError(
+            ["rdl_err_src/dpa_array_oob.rdl"],
+            "top",
+            "Array index '4' is out of range"
+        )

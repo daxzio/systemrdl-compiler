@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from antlr4.Token import CommonToken
     from antlr4 import ParserRuleContext
 
+InstanceRefElement = Tuple['CommonToken', List[ast.ASTNode]]
+
 #===============================================================================
 # Base Component visitor
 #===============================================================================
@@ -625,7 +627,7 @@ class ComponentVisitor(BaseVisitor):
     def visitDynamic_property_assignment(self, ctx: SystemRDLParser.Dynamic_property_assignmentContext) -> None:
 
         # List of component instance names in the hierarchical path
-        name_tokens = self.visit(ctx.instance_ref())
+        ref_elements: List[InstanceRefElement] = self.visit(ctx.instance_ref())
 
         if ctx.normal_prop_assign() is not None:
             prop_src_ref, prop_name, rhs = self.visit(ctx.normal_prop_assign())
@@ -634,11 +636,28 @@ class ComponentVisitor(BaseVisitor):
         else:
             raise RuntimeError
 
+        indexed_tokens = [name_token for name_token, array_suffixes in ref_elements if array_suffixes]
+        if indexed_tokens:
+            # Indexed references modify a single array element, making the
+            # array heterogeneous. Only allow properties that cannot alter a
+            # component's structure, so that all array elements are guaranteed
+            # to remain structurally identical (size, addressing, field layout).
+            if prop_name != "reset":
+                self.msg.fatal(
+                    "Use of array suffixes in dynamic property assignments is only supported for the 'reset' property",
+                    prop_src_ref
+                )
+            if len(indexed_tokens) > 1:
+                self.msg.fatal(
+                    "Multiple array suffixes in a dynamic property assignment reference are not supported",
+                    src_ref_from_antlr(indexed_tokens[1])
+                )
+
         # Lookup component instance being assigned
         current_component = self.component
         is_first_lvl = True
         target_path: str = ""
-        for name_token in name_tokens:
+        for name_token, array_suffixes in ref_elements:
             inst_name = get_ID_text(name_token)
             target_path += "." + inst_name # yes this result in a leading '.', i don't care
             child_idx = get_child_comp_index(current_component, inst_name)
@@ -670,8 +689,21 @@ class ComponentVisitor(BaseVisitor):
                     current_component.children[child_idx] = current_component.children[child_idx]._copy_for_inst({})
                     self.dpa_children_copied.add(target_path)
 
+            child_component = current_component.children[child_idx]
+
+            if array_suffixes:
+                if not isinstance(child_component, comp.AddressableComponent):
+                    self.msg.fatal(
+                        "Unable to index non-array component '%s'" % child_component.inst_name,
+                        src_ref_from_antlr(name_token)
+                    )
+                idx_tuple = self._resolve_dpa_array_index(child_component, array_suffixes, name_token)
+                for idx in idx_tuple:
+                    target_path += "[%d]" % idx
+                child_component = self._get_array_element_override(child_component, idx_tuple)
+
             # Advance to next level
-            current_component = current_component.children[child_idx]
+            current_component = child_component
             is_first_lvl = False
 
         # Path traversal is done. current_component is the assignment target
@@ -704,7 +736,7 @@ class ComponentVisitor(BaseVisitor):
         if prop_name in assigned_props:
             self.msg.fatal(
                 "Property '%s' was already assigned to component '%s' from within this scope"
-                % (prop_name, get_ID_text(name_tokens[-1])),
+                % (prop_name, get_ID_text(ref_elements[-1][0])),
                 prop_src_ref
             )
 
@@ -716,24 +748,64 @@ class ComponentVisitor(BaseVisitor):
         current_component._dyn_assigned_props.add(prop_name)
         self.assigned_properties_dynamic[target_path] = (assigned_props, assigned_mutex_bins)
 
-    def visitInstance_ref(self, ctx: SystemRDLParser.Instance_refContext) -> List['CommonToken']:
-        name_tokens = []
-        for ref_elem in ctx.getTypedRuleContexts(SystemRDLParser.Instance_ref_elementContext):
-            name_tokens.append(self.visit(ref_elem))
-        return name_tokens
-
-    def visitInstance_ref_element(self, ctx: SystemRDLParser.Instance_ref_elementContext) -> 'CommonToken':
-        name_token = ctx.ID()
-
-        # Intentionally not supporting array references in dynamic assignments
-        # due to heterogeneous array complications.
-        for as_ctx in ctx.getTypedRuleContexts(SystemRDLParser.Array_suffixContext):
+    def _resolve_dpa_array_index(self, component: comp.AddressableComponent, array_suffixes: List[ast.ASTNode], name_token: 'CommonToken') -> Tuple[int, ...]:
+        if not component.array_dimensions:
             self.msg.fatal(
-                "Use of array suffixes in dynamic property assignments is not supported",
-                src_ref_from_antlr(as_ctx)
+                "Unable to index non-array component '%s'" % component.inst_name,
+                src_ref_from_antlr(name_token)
             )
 
-        return name_token
+        array_dimensions: List[int] = []
+        for dim in component.array_dimensions:
+            if isinstance(dim, ast.ASTNode):
+                array_dimensions.append(dim.get_value())
+            else:
+                array_dimensions.append(dim)
+
+        if len(array_suffixes) != len(array_dimensions):
+            self.msg.fatal(
+                "Incompatible number of index dimensions after '%s'. Expected %d, found %d."
+                % (get_ID_text(name_token), len(array_dimensions), len(array_suffixes)),
+                src_ref_from_antlr(name_token)
+            )
+
+        idx_list = [suffix.get_value() for suffix in array_suffixes]
+        for i, idx in enumerate(idx_list):
+            if idx < 0 or idx >= array_dimensions[i]:
+                self.msg.fatal(
+                    "Array index '%d' is out of range for '%s'. Expected 0-%d."
+                    % (idx, get_ID_text(name_token), array_dimensions[i] - 1),
+                    src_ref_from_antlr(name_token)
+                )
+
+        return tuple(idx_list)
+
+    def _get_array_element_override(self, array_inst: comp.AddressableComponent, idx_tuple: Tuple[int, ...]) -> comp.AddressableComponent:
+        if array_inst.array_element_overrides is None:
+            array_inst.array_element_overrides = {}
+
+        if idx_tuple not in array_inst.array_element_overrides:
+            elem_inst = array_inst._copy_for_inst({})
+            elem_inst.array_dimensions = None
+            elem_inst.array_stride = None
+            array_inst.array_element_overrides[idx_tuple] = elem_inst
+
+        return array_inst.array_element_overrides[idx_tuple]
+
+    def visitInstance_ref(self, ctx: SystemRDLParser.Instance_refContext) -> List[InstanceRefElement]:
+        ref_elements: List[InstanceRefElement] = []
+        for ref_elem in ctx.getTypedRuleContexts(SystemRDLParser.Instance_ref_elementContext):
+            ref_elements.append(self.visit(ref_elem))
+        return ref_elements
+
+    def visitInstance_ref_element(self, ctx: SystemRDLParser.Instance_ref_elementContext) -> InstanceRefElement:
+        name_token = ctx.ID()
+
+        array_suffixes = []
+        for as_ctx in ctx.getTypedRuleContexts(SystemRDLParser.Array_suffixContext):
+            array_suffixes.append(self.visit(as_ctx))
+
+        return name_token, array_suffixes
 
     def visitNormal_prop_assign(self, ctx: SystemRDLParser.Normal_prop_assignContext) -> Tuple[Optional[SourceRefBase], str, Optional[ast.ASTNode]]:
 
