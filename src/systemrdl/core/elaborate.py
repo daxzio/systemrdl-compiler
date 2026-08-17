@@ -1,5 +1,6 @@
 import hashlib
-from typing import TYPE_CHECKING, List, Optional, cast
+from typing import TYPE_CHECKING, List, Optional, cast, Set
+from copy import copy
 
 from ..ast import ASTNode
 from .helpers import is_pow2, roundup_pow2, roundup_to, dedent_text
@@ -14,6 +15,28 @@ from ..node import AddrmapNode, MemNode, SignalNode, Node
 if TYPE_CHECKING:
     from ..messages import MessageHandler
     from ..compiler import RDLEnvironment
+
+def iter_insts_with_array_overrides(inst: comp.Component) -> List[comp.Component]:
+    insts: List[comp.Component] = []
+    if isinstance(inst, comp.AddressableComponent) and inst.array_element_overrides:
+        insts.append(inst)
+    for child in inst.children:
+        insts.extend(iter_insts_with_array_overrides(child))
+    return insts
+
+def sync_array_metadata_to_overrides(array_inst: comp.AddressableComponent) -> None:
+    if not array_inst.array_dimensions:
+        return
+
+    override_insts: List[comp.AddressableComponent] = []
+    if array_inst.array_element_overrides:
+        override_insts.extend(array_inst.array_element_overrides.values())
+    if array_inst.array_element_override_pending:
+        override_insts.extend(array_inst.array_element_override_pending.values())
+
+    for elem_inst in override_insts:
+        elem_inst.array_dimensions = copy(array_inst.array_dimensions)
+        elem_inst.array_stride = array_inst.array_stride
 
 #===============================================================================
 # Elaboration Listeners
@@ -95,9 +118,34 @@ class ElabExpressionsListener(walker.RDLListener):
                     node.inst.inst_src_ref
                 )
 
+        self._resolve_array_element_override_pending(node)
+
+        sync_array_metadata_to_overrides(node.inst)
+
         if node.inst.array_element_overrides:
             for elem_inst in node.inst.array_element_overrides.values():
                 self._eval_inst_property_exprs(elem_inst, node)
+
+
+    def _resolve_array_element_override_pending(self, node: AddressableNode) -> None:
+        if not node.inst.array_element_override_pending:
+            return
+
+        assert node.inst.array_dimensions is not None
+        if node.inst.array_element_overrides is None:
+            node.inst.array_element_overrides = {}
+
+        for idx_tuple, elem_inst in node.inst.array_element_override_pending.items():
+            for i, idx in enumerate(idx_tuple):
+                if idx < 0 or idx >= node.inst.array_dimensions[i]:
+                    self.msg.fatal(
+                        "Array index '%d' is out of range for '%s'. Expected 0-%d."
+                        % (idx, node.inst.inst_name, node.inst.array_dimensions[i] - 1),
+                        node.inst.inst_src_ref
+                    )
+            node.inst.array_element_overrides[idx_tuple] = elem_inst
+
+        node.inst.array_element_override_pending = None
 
 
     def enter_VectorComponent(self, node: VectorNode) -> None:
@@ -438,6 +486,8 @@ class StructuralPlacementListener(walker.RDLListener):
                 return min(inst.lsb, inst.msb)
         node.inst.children.sort(key=get_field_sort_key)
 
+        self.sync_array_element_overrides(node)
+
 
     def exit_Regfile(self, node: RegfileNode) -> None:
         self.resolve_addresses(node)
@@ -467,6 +517,8 @@ class StructuralPlacementListener(walker.RDLListener):
                     "Array stride of component '%s' is not explicitly set" % node.inst.inst_name,
                     node.inst.inst_src_ref
                 )
+
+        sync_array_metadata_to_overrides(node.inst)
 
 
     def resolve_addresses(self, node: AddressableNode, is_bridge: bool = False) -> None:
@@ -560,11 +612,10 @@ class StructuralPlacementListener(walker.RDLListener):
         node.inst.children.sort(key=get_child_sort_key)
 
     def sync_array_element_overrides(self, node: AddressableNode) -> None:
-        if not node.inst.array_element_overrides:
-            return
-
-        for elem_inst in node.inst.array_element_overrides.values():
-            self._sync_inst_addresses(node.inst, elem_inst)
+        for inst in iter_insts_with_array_overrides(node.inst):
+            assert isinstance(inst, comp.AddressableComponent)
+            for elem_inst in inst.array_element_overrides.values(): # type: ignore[union-attr]
+                self._sync_inst_addresses(inst, elem_inst)
 
     def _sync_inst_addresses(self, template: comp.Component, override: comp.Component) -> None:
         if isinstance(template, comp.Field):
@@ -592,6 +643,7 @@ class LateElabListener(walker.RDLListener):
         self.coerce_end_regfile: Optional[Node] = None
 
         self.node_needs_revisit: List[Node] = []
+        self.processed_override_insts: Set[int] = set()
 
 
     def enter_Component(self, node: Node) -> None:
@@ -656,6 +708,23 @@ class LateElabListener(walker.RDLListener):
 
 
     def exit_Component(self, node: Node) -> None:
+        self._generate_elaborated_type_name(node)
+        for inst in iter_insts_with_array_overrides(node.inst):
+            assert isinstance(inst, comp.AddressableComponent)
+            for elem_inst in inst.array_element_overrides.values(): # type: ignore[union-attr]
+                self._generate_override_inst_type_names(elem_inst, node)
+
+    def _generate_override_inst_type_names(self, inst: comp.Component, parent_node: Node) -> None:
+        if id(inst) in self.processed_override_insts:
+            return
+        self.processed_override_insts.add(id(inst))
+
+        override_node = Node._factory(inst, self.env, parent_node)
+        self._generate_elaborated_type_name(override_node)
+        for child_inst in inst.children:
+            self._generate_override_inst_type_names(child_inst, override_node)
+
+    def _generate_elaborated_type_name(self, node: Node) -> None:
         # Generate elaborated type name
         # (only if it exists. Some importers will not assign a type name)
         if node.inst.type_name is not None:

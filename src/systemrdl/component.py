@@ -283,6 +283,17 @@ class AddressableComponent(Component):
         #: Remains ``None`` if all array elements are homogeneous.
         self.array_element_overrides: Optional[Dict[Tuple[int, ...], 'AddressableComponent']] = None
 
+        #: Indexed dynamic property assignments whose array dimension sizes are
+        #: not yet known. Keys are resolved index tuples. Values are component
+        #: trees that diverge from this array's component tree. Moved into
+        #: :attr:`array_element_overrides` during elaboration once array
+        #: dimensions are evaluated and index bounds are checked.
+        self.array_element_override_pending: Optional[Dict[Tuple[int, ...], 'AddressableComponent']] = None
+
+        #: True if this instance is a single element override copied out of an
+        #: array. Used internally to prevent accidental re-unrolling.
+        self.is_array_element_override: bool = False
+
     def _copy_for_inst(self: 'AddressableComponentClass', memo: Dict[int, Any], recursive: bool = False) -> 'AddressableComponentClass':
         result = super()._copy_for_inst(memo, recursive)
         result.addr_offset = self.addr_offset
@@ -296,6 +307,14 @@ class AddressableComponent(Component):
             }
         else:
             result.array_element_overrides = None
+        if self.array_element_override_pending is not None:
+            result.array_element_override_pending = {
+                idxs: elem._copy_for_inst(memo, recursive)
+                for idxs, elem in self.array_element_override_pending.items()
+            }
+        else:
+            result.array_element_override_pending = None
+        result.is_array_element_override = self.is_array_element_override
         return result
 
 

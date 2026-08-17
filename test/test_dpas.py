@@ -263,39 +263,119 @@ class TestDPAs(RDLSourceTestCase):
             "top"
         )
 
+        gpio_enum_pll_lock = 0xB
+        gpio_enum_pll_bypass = 0xA
+
         resets = {}
-        gpio_addrs = {}
+        gpio_nodes = {}
         for node in top.descendants(unroll=True):
             if isinstance(node, RegfileNode) and node.inst_name == "GPIO":
-                gpio_addrs[node.get_path()] = node.address_offset
+                gpio_nodes[node.get_path()] = node
             if isinstance(node, FieldNode) and node.inst_name == "CFG":
                 resets[node.get_path()] = node.get_property("reset")
 
-        self.assertEqual(resets["top.GPIO[0].CFG.CFG"], 11)
-        self.assertEqual(resets["top.GPIO[1].CFG.CFG"], 0)
-        self.assertEqual(resets["top.GPIO[2].CFG.CFG"], 0)
-        self.assertEqual(resets["top.GPIO[3].CFG.CFG"], 10)
+        self.assertEqual(resets["top.GPIO[0].CFG.CFG"], gpio_enum_pll_lock)
+        self.assertIsNone(resets["top.GPIO[1].CFG.CFG"])
+        self.assertIsNone(resets["top.GPIO[2].CFG.CFG"])
+        self.assertEqual(resets["top.GPIO[3].CFG.CFG"], gpio_enum_pll_bypass)
 
-        gpio_size = top.find_by_path("top.GPIO[0]").size
-        self.assertEqual(gpio_addrs["top.GPIO[0]"], 0)
-        self.assertEqual(gpio_addrs["top.GPIO[1]"], gpio_addrs["top.GPIO[0]"] + gpio_size)
-        self.assertEqual(gpio_addrs["top.GPIO[3]"], gpio_addrs["top.GPIO[0]"] + 3 * gpio_size)
+        gpio_size = gpio_nodes["top.GPIO[0]"].size
+        self.assertEqual(gpio_nodes["top.GPIO[0]"].address_offset, 0)
+        self.assertEqual(gpio_nodes["top.GPIO[1]"].address_offset, gpio_nodes["top.GPIO[0]"].address_offset + gpio_size)
+        self.assertEqual(gpio_nodes["top.GPIO[3]"].address_offset, gpio_nodes["top.GPIO[0]"].address_offset + 3 * gpio_size)
+
+        for path, node in gpio_nodes.items():
+            with self.subTest(path=path):
+                self.assertTrue(node.is_array)
+                self.assertEqual(node.array_dimensions, [4])
+                self.assertEqual(node.n_elements, 4)
+                self.assertEqual(node.total_size, 4 * gpio_size)
 
         self.assertEqual(
-            top.find_by_path("top.GPIO[0].CFG.CFG").get_property("reset"),
-            11
+            top.find_by_path("top.GPIO[0].CFG.CFG").type_name,
+            "CFG_reset_b"
         )
+        self.assertEqual(
+            top.find_by_path("top.GPIO[3].CFG.CFG").type_name,
+            "CFG_reset_a"
+        )
+
+    def test_indexed_dpa_reset_on_reg_array(self):
+        top = self.compile(
+            ["rdl_src/dpa_array_reg_reset.rdl"],
+            "top"
+        )
+
+        resets = {}
+        for node in top.descendants(unroll=True):
+            if isinstance(node, FieldNode) and node.inst_name == "f":
+                resets[node.get_path()] = (node.get_property("reset"), node.width, node.msb, node.lsb)
+
+        self.assertEqual(resets["top.my_reg[0].f"], (None, 4, 3, 0))
+        self.assertEqual(resets["top.my_reg[1].f"], (3, 4, 3, 0))
+        self.assertEqual(resets["top.my_reg[2].f"], (None, 4, 3, 0))
+
+    def test_indexed_dpa_reset_propagates_whole_array_dpa(self):
+        top = self.compile(
+            ["rdl_src/dpa_array_reset_propagate.rdl"],
+            "top"
+        )
+
+        names = {}
+        for node in top.descendants(unroll=True):
+            if isinstance(node, FieldNode) and node.inst_name == "f":
+                names[node.get_path()] = node.get_property("name")
+
+        self.assertEqual(names["top.rf[0].r1.f"], "SHARED")
+        self.assertEqual(names["top.rf[1].r1.f"], "SHARED")
+        self.assertEqual(names["top.rf[2].r1.f"], "SHARED")
+        self.assertEqual(names["top.rf[3].r1.f"], "SHARED")
 
     def test_indexed_dpa_reset_rejects_non_reset(self):
         self.assertRDLCompileError(
-            ["rdl_err_src/dpa_array_non_reset.rdl"],
+            ["rdl_err_src/err_dpa_array_non_reset.rdl"],
             "top",
             "Use of array suffixes in dynamic property assignments is only supported for the 'reset' property"
         )
 
     def test_indexed_dpa_reset_rejects_oob_index(self):
         self.assertRDLCompileError(
-            ["rdl_err_src/dpa_array_oob.rdl"],
+            ["rdl_err_src/err_dpa_array_oob.rdl"],
             "top",
             "Array index '4' is out of range"
         )
+
+    def test_indexed_dpa_reset_rejects_multi_suffix(self):
+        self.assertRDLCompileError(
+            ["rdl_err_src/err_dpa_array_multi_suffix.rdl"],
+            "top",
+            "Multiple array suffixes in a dynamic property assignment reference are not supported"
+        )
+
+    def test_indexed_dpa_reset_rejects_dim_mismatch(self):
+        self.assertRDLCompileError(
+            ["rdl_err_src/err_dpa_array_dim_mismatch.rdl"],
+            "top",
+            "Incompatible number of index dimensions"
+        )
+
+    def test_indexed_dpa_reset_rejects_invalid_reset(self):
+        self.assertRDLCompileError(
+            ["rdl_err_src/err_dpa_array_reset_oob.rdl"],
+            "top",
+            "cannot fit within its width"
+        )
+
+    def test_indexed_dpa_reset_parameterized_array(self):
+        top = self.compile(
+            ["rdl_src/dpa_array_reset_param.rdl"],
+            "top"
+        )
+
+        resets = {}
+        for node in top.descendants(unroll=True):
+            if isinstance(node, FieldNode) and node.inst_name == "f":
+                resets[node.get_path()] = node.get_property("reset")
+
+        self.assertEqual(resets["top.my_reg[6].f"], 1)
+        self.assertIsNone(resets["top.my_reg[0].f"])

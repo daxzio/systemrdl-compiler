@@ -4,18 +4,15 @@ enum gpio_enum {
     PLL_LOCK     = 4'hB;
 };
 
-regfile GPIO_INSTANCE #(
-    longint CFG_DEFAULT = 0
-) {
+regfile GPIO_INSTANCE {
     reg {
         field {
             encode = gpio_enum;
-        } CFG[4] = CFG_DEFAULT;
+        } CFG[4];
     } CFG;
 };
 
 addrmap top #(
-    longint CFG_DEFAULT_0 = gpio_enum::GPIO_DISABLE,
     longint CFG_DEFAULT_3 = gpio_enum::PLL_LOCK
 ) {
     GPIO_INSTANCE GPIO[4];

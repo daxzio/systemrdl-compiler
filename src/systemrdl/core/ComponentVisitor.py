@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from antlr4.Token import CommonToken
     from antlr4 import ParserRuleContext
 
-InstanceRefElement = Tuple['CommonToken', List[ast.ASTNode]]
+InstanceRefElement = Tuple['CommonToken', List[ast.ASTNode], List['ParserRuleContext']]
 
 #===============================================================================
 # Base Component visitor
@@ -636,7 +636,7 @@ class ComponentVisitor(BaseVisitor):
         else:
             raise RuntimeError
 
-        indexed_tokens = [name_token for name_token, array_suffixes in ref_elements if array_suffixes]
+        indexed_tokens = [name_token for name_token, array_suffixes, _ in ref_elements if array_suffixes]
         if indexed_tokens:
             # Indexed references modify a single array element, making the
             # array heterogeneous. Only allow properties that cannot alter a
@@ -657,9 +657,13 @@ class ComponentVisitor(BaseVisitor):
         current_component = self.component
         is_first_lvl = True
         target_path: str = ""
-        for name_token, array_suffixes in ref_elements:
+        arrays_traversed_without_index: List[comp.AddressableComponent] = []
+        path_below_arrays: Dict[int, List[str]] = {}
+        for name_token, array_suffixes, array_suffix_ctxs in ref_elements:
             inst_name = get_ID_text(name_token)
             target_path += "." + inst_name # yes this result in a leading '.', i don't care
+            for rel_path in path_below_arrays.values():
+                rel_path.append(inst_name)
             child_idx = get_child_comp_index(current_component, inst_name)
             if child_idx is None:
                 # Not found!
@@ -695,12 +699,20 @@ class ComponentVisitor(BaseVisitor):
                 if not isinstance(child_component, comp.AddressableComponent):
                     self.msg.fatal(
                         "Unable to index non-array component '%s'" % child_component.inst_name,
-                        src_ref_from_antlr(name_token)
+                        src_ref_from_antlr(array_suffix_ctxs[0].start)
                     )
-                idx_tuple = self._resolve_dpa_array_index(child_component, array_suffixes, name_token)
+                idx_tuple, defer_bounds_check = self._resolve_dpa_array_index(
+                    child_component, array_suffixes, array_suffix_ctxs
+                )
                 for idx in idx_tuple:
                     target_path += "[%d]" % idx
-                child_component = self._get_array_element_override(child_component, idx_tuple)
+                if defer_bounds_check:
+                    child_component = self._get_array_element_override(child_component, idx_tuple, defer_bounds_check=True)
+                else:
+                    child_component = self._get_array_element_override(child_component, idx_tuple)
+            elif isinstance(child_component, comp.AddressableComponent) and child_component.array_dimensions:
+                arrays_traversed_without_index.append(child_component)
+                path_below_arrays[id(child_component)] = []
 
             # Advance to next level
             current_component = child_component
@@ -742,55 +754,122 @@ class ComponentVisitor(BaseVisitor):
 
         # Apply property
         rule.assign_value(current_component, rhs, prop_src_ref)
+        if arrays_traversed_without_index:
+            self._propagate_dpa_to_array_overrides(
+                arrays_traversed_without_index, path_below_arrays, rule, rhs, prop_src_ref
+            )
         assigned_props.add(prop_name)
         if rule.mutex_group is not None:
             assigned_mutex_bins[rule.mutex_group] = prop_name
         current_component._dyn_assigned_props.add(prop_name)
         self.assigned_properties_dynamic[target_path] = (assigned_props, assigned_mutex_bins)
 
-    def _resolve_dpa_array_index(self, component: comp.AddressableComponent, array_suffixes: List[ast.ASTNode], name_token: 'CommonToken') -> Tuple[int, ...]:
+    def _resolve_dpa_array_index(
+        self,
+        component: comp.AddressableComponent,
+        array_suffixes: List[ast.ASTNode],
+        array_suffix_ctxs: List['ParserRuleContext'],
+    ) -> Tuple[Tuple[int, ...], bool]:
         if not component.array_dimensions:
             self.msg.fatal(
                 "Unable to index non-array component '%s'" % component.inst_name,
-                src_ref_from_antlr(name_token)
+                src_ref_from_antlr(array_suffix_ctxs[0].start)
             )
 
-        array_dimensions: List[int] = []
-        for dim in component.array_dimensions:
-            if isinstance(dim, ast.ASTNode):
-                array_dimensions.append(dim.get_value())
-            else:
-                array_dimensions.append(dim)
+        defer_bounds_check = any(isinstance(dim, ast.ASTNode) for dim in component.array_dimensions)
 
-        if len(array_suffixes) != len(array_dimensions):
+        if len(array_suffixes) != len(component.array_dimensions):
             self.msg.fatal(
                 "Incompatible number of index dimensions after '%s'. Expected %d, found %d."
-                % (get_ID_text(name_token), len(array_dimensions), len(array_suffixes)),
-                src_ref_from_antlr(name_token)
+                % (component.inst_name, len(component.array_dimensions), len(array_suffixes)),
+                src_ref_from_antlr(array_suffix_ctxs[0].start)
             )
 
-        idx_list = [suffix.get_value() for suffix in array_suffixes]
-        for i, idx in enumerate(idx_list):
-            if idx < 0 or idx >= array_dimensions[i]:
+        idx_list: List[int] = []
+        for suffix, suffix_ctx in zip(array_suffixes, array_suffix_ctxs):
+            try:
+                idx = suffix.get_value()
+            except AssertionError:
                 self.msg.fatal(
-                    "Array index '%d' is out of range for '%s'. Expected 0-%d."
-                    % (idx, get_ID_text(name_token), array_dimensions[i] - 1),
-                    src_ref_from_antlr(name_token)
+                    "Array index in dynamic property assignments must be a constant expression",
+                    src_ref_from_antlr(suffix_ctx.start)
                 )
+            idx_list.append(idx)
 
-        return tuple(idx_list)
+        if not defer_bounds_check:
+            array_dimensions: List[int] = []
+            for dim in component.array_dimensions:
+                assert not isinstance(dim, ast.ASTNode)
+                array_dimensions.append(dim)
 
-    def _get_array_element_override(self, array_inst: comp.AddressableComponent, idx_tuple: Tuple[int, ...]) -> comp.AddressableComponent:
+            for i, idx in enumerate(idx_list):
+                if idx < 0 or idx >= array_dimensions[i]:
+                    self.msg.fatal(
+                        "Array index '%d' is out of range for '%s'. Expected 0-%d."
+                        % (idx, component.inst_name, array_dimensions[i] - 1),
+                        src_ref_from_antlr(array_suffix_ctxs[i].start)
+                    )
+
+        return tuple(idx_list), defer_bounds_check
+
+    def _get_array_element_override(
+        self,
+        array_inst: comp.AddressableComponent,
+        idx_tuple: Tuple[int, ...],
+        defer_bounds_check: bool = False,
+    ) -> comp.AddressableComponent:
+        if defer_bounds_check:
+            if array_inst.array_element_override_pending is None:
+                array_inst.array_element_override_pending = {}
+
+            if idx_tuple not in array_inst.array_element_override_pending:
+                array_inst.array_element_override_pending[idx_tuple] = self._copy_array_element_override(array_inst)
+
+            return array_inst.array_element_override_pending[idx_tuple]
+
         if array_inst.array_element_overrides is None:
             array_inst.array_element_overrides = {}
 
         if idx_tuple not in array_inst.array_element_overrides:
-            elem_inst = array_inst._copy_for_inst({})
-            elem_inst.array_dimensions = None
-            elem_inst.array_stride = None
-            array_inst.array_element_overrides[idx_tuple] = elem_inst
+            array_inst.array_element_overrides[idx_tuple] = self._copy_array_element_override(array_inst)
 
         return array_inst.array_element_overrides[idx_tuple]
+
+    def _copy_array_element_override(self, array_inst: comp.AddressableComponent) -> comp.AddressableComponent:
+        elem_inst = array_inst._copy_for_inst({})
+        elem_inst.is_array_element_override = True
+        return elem_inst
+
+    def _propagate_dpa_to_array_overrides(
+        self,
+        arrays_traversed_without_index: List[comp.AddressableComponent],
+        path_below_arrays: Dict[int, List[str]],
+        rule: Any,
+        rhs: Optional[ast.ASTNode],
+        prop_src_ref: Optional[SourceRefBase],
+    ) -> None:
+        for array_inst in arrays_traversed_without_index:
+            if not array_inst.array_element_overrides and not array_inst.array_element_override_pending:
+                continue
+
+            rel_path = path_below_arrays.get(id(array_inst), [])
+            override_insts: List[comp.AddressableComponent] = []
+            if array_inst.array_element_overrides:
+                override_insts.extend(array_inst.array_element_overrides.values())
+            if array_inst.array_element_override_pending:
+                override_insts.extend(array_inst.array_element_override_pending.values())
+            for elem_inst in override_insts:
+                override_target = self._follow_inst_path(elem_inst, rel_path)
+                if override_target is not None:
+                    rule.assign_value(override_target, rhs, prop_src_ref)
+
+    def _follow_inst_path(self, root: comp.Component, path: List[str]) -> Optional[comp.Component]:
+        current: Optional[comp.Component] = root
+        for name in path:
+            if current is None:
+                return None
+            current = current.get_child_by_name(name)
+        return current
 
     def visitInstance_ref(self, ctx: SystemRDLParser.Instance_refContext) -> List[InstanceRefElement]:
         ref_elements: List[InstanceRefElement] = []
@@ -802,10 +881,12 @@ class ComponentVisitor(BaseVisitor):
         name_token = ctx.ID()
 
         array_suffixes = []
+        array_suffix_ctxs = []
         for as_ctx in ctx.getTypedRuleContexts(SystemRDLParser.Array_suffixContext):
             array_suffixes.append(self.visit(as_ctx))
+            array_suffix_ctxs.append(as_ctx)
 
-        return name_token, array_suffixes
+        return name_token, array_suffixes, array_suffix_ctxs
 
     def visitNormal_prop_assign(self, ctx: SystemRDLParser.Normal_prop_assignContext) -> Tuple[Optional[SourceRefBase], str, Optional[ast.ASTNode]]:
 
