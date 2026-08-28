@@ -294,12 +294,27 @@ class AddressableComponent(Component):
         #: array. Used internally to prevent accidental re-unrolling.
         self.is_array_element_override: bool = False
 
-    def _copy_for_inst(self: 'AddressableComponentClass', memo: Dict[int, Any], recursive: bool = False) -> 'AddressableComponentClass':
+    def _copy_for_inst(
+        self: 'AddressableComponentClass',
+        memo: Dict[int, Any],
+        recursive: bool = False,
+        *,
+        with_array_element_overrides: bool = True,
+    ) -> 'AddressableComponentClass':
         result = super()._copy_for_inst(memo, recursive)
         result.addr_offset = self.addr_offset
         result.addr_align = self.addr_align
         result.array_dimensions = copy(self.array_dimensions)
         result.array_stride = self.array_stride
+        result.is_array_element_override = self.is_array_element_override
+
+        if not with_array_element_overrides:
+            # Element overrides are siblings of the element being cloned, not part
+            # of it. Copying them nests every element inside the next one created.
+            result.array_element_overrides = None
+            result.array_element_override_pending = None
+            return result
+
         if self.array_element_overrides is not None:
             result.array_element_overrides = {
                 idxs: elem._copy_for_inst(memo, recursive)
@@ -314,7 +329,17 @@ class AddressableComponent(Component):
             }
         else:
             result.array_element_override_pending = None
-        result.is_array_element_override = self.is_array_element_override
+        return result
+
+    def _copy_for_array_element(self: 'AddressableComponentClass') -> 'AddressableComponentClass':
+        """
+        Clone this array container to represent a single element that diverges
+        from the rest of the array. The clone keeps the array metadata so the
+        element's path and address still resolve, but does not inherit the
+        container's other element overrides.
+        """
+        result = self._copy_for_inst({}, with_array_element_overrides=False)
+        result.is_array_element_override = True
         return result
 
 
@@ -464,8 +489,14 @@ class Reg(AddressableComponent):
         #: instance
         self.alias_primary_inst: Optional[Reg] = None
 
-    def _copy_for_inst(self: 'Reg', memo: Dict[int, Any], recursive: bool = False) -> 'Reg':
-        result = super()._copy_for_inst(memo, recursive)
+    def _copy_for_inst(
+        self: 'Reg',
+        memo: Dict[int, Any],
+        recursive: bool = False,
+        *,
+        with_array_element_overrides: bool = True,
+    ) -> 'Reg':
+        result = super()._copy_for_inst(memo, recursive, with_array_element_overrides=with_array_element_overrides)
         result.is_msb0_order = self.is_msb0_order
         result._alias_names = copy(self._alias_names)
         result.overlaps_with_names = copy(self.overlaps_with_names)

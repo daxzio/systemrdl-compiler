@@ -379,3 +379,24 @@ class TestDPAs(RDLSourceTestCase):
 
         self.assertEqual(resets["top.my_reg[6].f"], 1)
         self.assertIsNone(resets["top.my_reg[0].f"])
+
+    def test_indexed_dpa_reset_many_elements(self):
+        top = self.compile(
+            ["rdl_src/dpa_array_reset_many.rdl"],
+            "top"
+        )
+
+        resets = {}
+        for node in top.descendants(unroll=True):
+            if isinstance(node, FieldNode) and node.inst_name == "f":
+                resets[node.get_path()] = node.get_property("reset")
+
+        for i in range(32):
+            self.assertEqual(resets[f"top.my_reg[{i}].f"], i)
+
+        my_reg = top.find_by_path("top.my_reg")
+        self.assertIsNotNone(my_reg.inst.array_element_overrides)
+        for elem_inst in my_reg.inst.array_element_overrides.values():
+            self.assertIsNone(elem_inst.array_element_overrides)
+            self.assertIsNone(elem_inst.array_element_override_pending)
+            self.assertEqual(elem_inst.array_dimensions, [32])

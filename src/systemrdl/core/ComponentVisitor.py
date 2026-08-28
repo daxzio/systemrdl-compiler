@@ -823,7 +823,7 @@ class ComponentVisitor(BaseVisitor):
                 array_inst.array_element_override_pending = {}
 
             if idx_tuple not in array_inst.array_element_override_pending:
-                array_inst.array_element_override_pending[idx_tuple] = self._copy_array_element_override(array_inst)
+                array_inst.array_element_override_pending[idx_tuple] = array_inst._copy_for_array_element()
 
             return array_inst.array_element_override_pending[idx_tuple]
 
@@ -831,14 +831,9 @@ class ComponentVisitor(BaseVisitor):
             array_inst.array_element_overrides = {}
 
         if idx_tuple not in array_inst.array_element_overrides:
-            array_inst.array_element_overrides[idx_tuple] = self._copy_array_element_override(array_inst)
+            array_inst.array_element_overrides[idx_tuple] = array_inst._copy_for_array_element()
 
         return array_inst.array_element_overrides[idx_tuple]
-
-    def _copy_array_element_override(self, array_inst: comp.AddressableComponent) -> comp.AddressableComponent:
-        elem_inst = array_inst._copy_for_inst({})
-        elem_inst.is_array_element_override = True
-        return elem_inst
 
     def _propagate_dpa_to_array_overrides(
         self,
